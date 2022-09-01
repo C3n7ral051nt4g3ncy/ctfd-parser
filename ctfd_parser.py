@@ -35,44 +35,42 @@ class CTFdParser(object):
         self.session = requests.Session()
 
     def login(self):
-        r = self.session.get(self.target + '/login')
+        r = self.session.get(f'{self.target}/login')
         matched = re.search(b"""('csrfNonce':[ \t]+"([a-f0-9A-F]+))""", r.content)
-        nonce = ""
-        if matched is not None:
-            nonce = matched.groups()[1]
+        nonce = matched.groups()[1] if matched is not None else ""
         r = self.session.post(
-            self.target + '/login',
+            f'{self.target}/login',
             data={
                 'name': self.credentials['user'],
                 'password': self.credentials['password'],
                 '_submit': 'Submit',
-                'nonce': nonce.decode('UTF-8')
-            }
+                'nonce': nonce.decode('UTF-8'),
+            },
         )
-        if r.status_code == 200:
-            return True
-        else:
-            return False
+
+        return r.status_code == 200
 
     def get_challenges(self, threads=8):
         """Documentation for get_challenges"""
-        r = self.session.get(self.target + "/api/v1/challenges")
+        r = self.session.get(f"{self.target}/api/v1/challenges")
 
-        if r.status_code == 200:
-            json_challs = json.loads(r.content)
-            if json_challs is not None:
-                if json_challs['success']:
-                    self.challenges = json_challs['data']
-                    self._parse(threads=threads)
-                else:
-                    print("[warn] An error occurred while requesting /api/v1/challenges")
-            return json_challs
-        else:
+        if r.status_code != 200:
             return None
+        json_challs = json.loads(r.content)
+        if json_challs is not None:
+            if json_challs['success']:
+                self.challenges = json_challs['data']
+                self._parse(threads=threads)
+            else:
+                print("[warn] An error occurred while requesting /api/v1/challenges")
+        return json_challs
 
     def _parse(self, threads=8):
         # Categories
-        self.categories = sorted(list(set([chall["category"] for chall in self.challenges])))
+        self.categories = sorted(
+            list({chall["category"] for chall in self.challenges})
+        )
+
 
         print('\x1b[1m[\x1b[93m+\x1b[0m\x1b[1m]\x1b[0m Found %d categories !' % len(self.categories))
 
@@ -98,52 +96,40 @@ class CTFdParser(object):
         if not os.path.exists(folder):
             os.makedirs(folder)
 
-        # Readme.md
-        f = open(folder + os.path.sep + "README.md", 'w')
-        f.write("# %s\n\n" % challenge["name"])
-        f.write("**Category** : %s\n" % challenge["category"])
-        f.write("**Points** : %s\n\n" % challenge["value"])
+        with open(folder + os.path.sep + "README.md", 'w') as f:
+            f.write("# %s\n\n" % challenge["name"])
+            f.write("**Category** : %s\n" % challenge["category"])
+            f.write("**Points** : %s\n\n" % challenge["value"])
 
-        chall_json = self.get_challenge_by_id(challenge["id"])["data"]
-        f.write("%s\n\n" % chall_json["description"])
+            chall_json = self.get_challenge_by_id(challenge["id"])["data"]
+            f.write("%s\n\n" % chall_json["description"])
 
-        connection_info = chall_json["connection_info"]
-        if connection_info is not None:
-            if len(connection_info) != 0:
+            connection_info = chall_json["connection_info"]
+            if connection_info is not None and len(connection_info) != 0:
                 f.write("%s\n\n" % connection_info)
 
-        # Get challenge files
-        if len(chall_json["files"]) != 0:
-            f.write("## Files : \n")
-            for file_url in chall_json["files"]:
-                r = self.session.head(self.target + file_url, allow_redirects=True)
-                size = int(r.headers["Content-Length"])
-                if "?" in file_url:
-                    filename = os.path.basename(file_url.split('?')[0])
-                else:
-                    filename = os.path.basename(file_url)
-                #
-                f.write(" - [%s](./%s)\n" % (filename, filename))
-                if size < (50 * 1024 * 1024):  # 50 Mo
+                # Get challenge files
+            if len(chall_json["files"]) != 0:
+                f.write("## Files : \n")
+                for file_url in chall_json["files"]:
+                    r = self.session.head(self.target + file_url, allow_redirects=True)
+                    size = int(r.headers["Content-Length"])
+                    if "?" in file_url:
+                        filename = os.path.basename(file_url.split('?')[0])
+                    else:
+                        filename = os.path.basename(file_url)
+                    #
+                    f.write(" - [%s](./%s)\n" % (filename, filename))
                     r = self.session.get(self.target + file_url, stream=True)
                     with open(folder + os.path.sep + filename, "wb") as fdl:
                         for chunk in r.iter_content(chunk_size=16 * 1024):
                             fdl.write(chunk)
-                else:
-                    r = self.session.get(self.target + file_url, stream=True)
-                    with open(folder + os.path.sep + filename, "wb") as fdl:
-                        for chunk in r.iter_content(chunk_size=16 * 1024):
-                            fdl.write(chunk)
-        f.write("\n\n")
-        f.close()
+            f.write("\n\n")
 
     def get_challenge_by_id(self, chall_id: int):
         """Documentation for get_challenge_by_id"""
         r = self.session.get(self.target + '/api/v1/challenges/%d' % chall_id)
-        json_chall = None
-        if r.status_code == 200:
-            json_chall = json.loads(r.content)
-        return json_chall
+        return json.loads(r.content) if r.status_code == 200 else None
 
 
 def header():
@@ -172,11 +158,11 @@ if __name__ == '__main__':
     args = parseArgs()
 
     if not args.target.startswith("http://") and not args.target.startswith("https://"):
-        args.target = "https://" + args.target
+        args.target = f"https://{args.target}"
     args.target = args.target.rstrip('/')
 
     if args.verbose:
-        print("[>] Target URL: %s" % args.target)
+        print(f"[>] Target URL: {args.target}")
 
     cp = CTFdParser(args.target, args.user, args.password)
     cp.login()
